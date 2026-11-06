@@ -1,5 +1,8 @@
+
 import os
+import uuid
 import logging
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -11,13 +14,16 @@ from telegram.ext import (
 )
 
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
 )
 
 TOKEN = os.environ["BOT_TOKEN"]
 ADMIN_ID = int(os.environ["ADMIN_ID"])
 CARD_NUMBER = os.environ["CARD_NUMBER"]
+PORT = int(os.environ.get("PORT", "10000"))
+BASE_URL = os.environ["RENDER_EXTERNAL_URL"].rstrip("/")
+SUPPORT = "https://t.me/argemnet"
 
 PLANS = {
     "10": ("10 گیگ", 60000),
@@ -27,21 +33,22 @@ PLANS = {
     "100": ("100 گیگ", 220000),
 }
 
-SUPPORT = "https://t.me/argemnet"
-
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton(f"{name} - {price:,} تومان", callback_data=f"plan:{key}")]
         for key, (name, price) in PLANS.items()
     ]
-
     await update.message.reply_text(
         "💎 به ARGEM خوش آمدید\n\n"
         "حجم موردنظرت رو انتخاب کن:\n"
         "تمام سرویس‌ها ۳۰ روز اعتبار دارن.",
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
+
+
+async def support(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(f"💬 پشتیبانی:\n{SUPPORT}")
 
 
 async def choose_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -56,27 +63,36 @@ async def choose_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💎 بسته انتخابی: {name}\n"
         f"💰 مبلغ: {price:,} تومان\n"
         f"💳 شماره کارت:\n{CARD_NUMBER}\n\n"
-        "بعد از واریز، تصویر رسید رو همین‌جا ارسال کن."
+        "بعد از واریز، تصویر رسید پرداخت رو همین‌جا ارسال کن."
     )
 
 
 async def receive_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     plan_id = context.user_data.get("selected_plan")
-
     if not plan_id:
         await update.message.reply_text("اول یک بسته انتخاب کن: /start")
         return
 
     name, price = PLANS[plan_id]
     user = update.effective_user
+    order_id = uuid.uuid4().hex[:8]
+
+    context.bot_data.setdefault("orders", {})
+    context.bot_data["orders"][order_id] = {
+        "user_id": user.id,
+        "plan": name,
+        "price": price,
+        "status": "pending",
+    }
 
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ تأیید پرداخت", callback_data=f"approve:{user.id}:{plan_id}"),
-        InlineKeyboardButton("❌ رد پرداخت", callback_data=f"reject:{user.id}"),
+        InlineKeyboardButton("✅ تأیید پرداخت", callback_data=f"approve:{order_id}"),
+        InlineKeyboardButton("❌ رد پرداخت", callback_data=f"reject:{order_id}"),
     ]])
 
     caption = (
         f"📥 سفارش جدید ARGEM\n\n"
+        f"کد سفارش: {order_id}\n"
         f"کاربر: {user.full_name}\n"
         f"شناسه: {user.id}\n"
         f"بسته: {name}\n"
@@ -103,21 +119,26 @@ async def admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("⛔ این بخش مخصوص مدیر است.")
         return
 
-    parts = query.data.split(":")
-    action = parts[0]
-    user_id = int(parts[1])
+    action, order_id = query.data.split(":")
+    order = context.bot_data.get("orders", {}).get(order_id)
+
+    if not order or order["status"] != "pending":
+        await query.message.reply_text("این سفارش پیدا نشد یا قبلاً بررسی شده.")
+        return
 
     if action == "approve":
-        plan_id = parts[2]
-        context.user_data["awaiting_config"] = (user_id, plan_id)
+        order["status"] = "approved"
+        context.user_data["awaiting_config"] = order_id
         await query.message.reply_text(
-            "پرداخت را بررسی کردی؟ اگر تأیید شده، حالا کانفیگ مشتری را در یک پیام متنی بفرست."
+            f"پرداخت سفارش {order_id} تأیید شد.\n"
+            "حالا کانفیگ مشتری رو در یک پیام متنی بفرست."
         )
 
     elif action == "reject":
+        order["status"] = "rejected"
         await context.bot.send_message(
-            chat_id=user_id,
-            text=f"پرداخت تأیید نشد. برای پیگیری: {SUPPORT}",
+            chat_id=order["user_id"],
+            text=f"پرداخت تأیید نشد.\nبرای پیگیری: {SUPPORT}",
         )
         await query.message.reply_text("سفارش رد شد.")
 
@@ -126,29 +147,29 @@ async def admin_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
 
-    pending = context.user_data.get("awaiting_config")
-    if not pending:
+    order_id = context.user_data.get("awaiting_config")
+    if not order_id:
         return
 
-    user_id, plan_id = pending
-    name, price = PLANS[plan_id]
+    order = context.bot_data.get("orders", {}).get(order_id)
+    if not order:
+        await update.message.reply_text("سفارش پیدا نشد.")
+        context.user_data.pop("awaiting_config", None)
+        return
 
     await context.bot.send_message(
-        chat_id=user_id,
+        chat_id=order["user_id"],
         text=(
-            f"💎 سفارش ARGEM آماده شد!\n"
-            f"بسته: {name}\n"
+            f"💎 سفارش {order_id} آماده شد!\n"
+            f"بسته: {order['plan']}\n"
             "اعتبار: ۳۰ روز\n\n"
             f"کانفیگ شما:\n{update.message.text}"
         ),
     )
 
+    order["status"] = "completed"
     context.user_data.pop("awaiting_config", None)
     await update.message.reply_text("✅ کانفیگ برای مشتری ارسال شد.")
-
-
-async def support(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"💬 پشتیبانی:\n{SUPPORT}")
 
 
 def main():
@@ -161,8 +182,15 @@ def main():
     app.add_handler(MessageHandler(filters.PHOTO, receive_receipt))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, admin_config))
 
-    logging.info("ARGEM bot is starting...")
-    app.run_polling()
+    logging.info("ARGEM is starting with webhook...")
+
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path="telegram",
+        webhook_url=f"{BASE_URL}/telegram",
+        allowed_updates=Update.ALL_TYPES,
+    )
 
 
 if __name__ == "__main__":
