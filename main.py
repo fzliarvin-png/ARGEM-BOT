@@ -1,6 +1,6 @@
-
 import os
 import uuid
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Application,
@@ -11,9 +11,11 @@ from telegram.ext import (
     filters,
 )
 
-TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
-CARD_NUMBER = os.getenv("CARD_NUMBER", "شماره کارت هنوز تنظیم نشده")
+TOKEN = os.environ["BOT_TOKEN"]
+ADMIN_ID = int(os.environ["ADMIN_ID"])
+CARD_NUMBER = os.environ["CARD_NUMBER"]
+PORT = int(os.environ.get("PORT", "10000"))
+BASE_URL = os.environ["RENDER_EXTERNAL_URL"].rstrip("/")
 SUPPORT = "https://t.me/argemnet"
 
 PLANS = {
@@ -24,6 +26,7 @@ PLANS = {
     "100": ("100 گیگ", 220000),
 }
 
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("10 گیگ - 60 هزار تومان", callback_data="plan:10")],
@@ -32,15 +35,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("50 گیگ - 150 هزار تومان", callback_data="plan:50")],
         [InlineKeyboardButton("100 گیگ - 220 هزار تومان", callback_data="plan:100")],
     ]
+
     await update.message.reply_text(
         "💎 به ARGEM خوش آمدید\n\n"
         "حجم موردنظرت رو انتخاب کن:\n"
-        "تمام سرویس‌ها 30 روز اعتبار دارن.",
+        "تمام سرویس‌ها ۳۰ روز اعتبار دارن.",
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
+
 async def support(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"💬 پشتیبانی:\n{SUPPORT}")
+
 
 async def choose_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -54,18 +60,15 @@ async def choose_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💎 بسته انتخابی: {name}\n"
         f"💰 مبلغ: {price:,} تومان\n"
         f"💳 شماره کارت:\n{CARD_NUMBER}\n\n"
-        "پس از واریز، تصویر رسید پرداخت رو همین‌جا ارسال کن."
+        "بعد از واریز، تصویر رسید پرداخت رو همین‌جا ارسال کن."
     )
+
 
 async def receive_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     plan_id = context.user_data.get("selected_plan")
 
     if not plan_id:
-        await update.message.reply_text("اول از منوی اصلی یک بسته انتخاب کن. /start")
-        return
-
-    if ADMIN_ID == 0:
-        await update.message.reply_text("ربات هنوز تنظیمات مدیر را ندارد.")
+        await update.message.reply_text("اول از منوی اصلی یک بسته انتخاب کن: /start")
         return
 
     name, price = PLANS[plan_id]
@@ -82,8 +85,8 @@ async def receive_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("تأیید پرداخت", callback_data=f"approve:{order_id}"),
-            InlineKeyboardButton("رد پرداخت", callback_data=f"reject:{order_id}"),
+            InlineKeyboardButton("✅ تأیید پرداخت", callback_data=f"approve:{order_id}"),
+            InlineKeyboardButton("❌ رد پرداخت", callback_data=f"reject:{order_id}"),
         ]
     ])
 
@@ -94,13 +97,12 @@ async def receive_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"شناسه کاربر: {user.id}\n"
         f"بسته: {name}\n"
         f"مبلغ: {price:,} تومان\n\n"
-        "لطفاً واریز را در حساب بانکی بررسی کن."
+        "قبل از تأیید، واریز را در حساب بانکی بررسی کن."
     )
 
-    photo = update.message.photo[-1]
     await context.bot.send_photo(
         chat_id=ADMIN_ID,
-        photo=photo.file_id,
+        photo=update.message.photo[-1].file_id,
         caption=caption,
         reply_markup=keyboard,
     )
@@ -109,7 +111,9 @@ async def receive_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "✅ رسیدت برای مدیر ارسال شد.\n"
         "بعد از بررسی پرداخت، نتیجه بهت اطلاع داده می‌شه."
     )
+
     context.user_data.pop("selected_plan", None)
+
 
 async def admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -129,17 +133,25 @@ async def admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if action == "approve":
         order["status"] = "approved"
         context.user_data["awaiting_config"] = order_id
+
         await query.message.reply_text(
             f"پرداخت سفارش {order_id} تأیید شد.\n"
             "حالا کانفیگ مخصوص این مشتری رو در یک پیام متنی بفرست."
         )
+
     elif action == "reject":
         order["status"] = "rejected"
+
         await context.bot.send_message(
             chat_id=order["user_id"],
-            text=f"پرداخت سفارش {order_id} تأیید نشد. لطفاً با پشتیبانی تماس بگیر: {SUPPORT}",
+            text=(
+                f"پرداخت سفارش {order_id} تأیید نشد.\n"
+                f"برای پیگیری با پشتیبانی تماس بگیر: {SUPPORT}"
+            ),
         )
+
         await query.message.reply_text("سفارش رد شد و به مشتری اطلاع داده شد.")
+
 
 async def admin_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -156,31 +168,41 @@ async def admin_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     config = update.message.text
+
     await context.bot.send_message(
         chat_id=order["user_id"],
         text=(
             f"💎 سفارش {order_id} آماده شد!\n"
             f"بسته: {order['plan']}\n"
-            "اعتبار: 30 روز\n\n"
+            "اعتبار: ۳۰ روز\n\n"
             f"کانفیگ شما:\n{config}"
         ),
     )
+
     order["status"] = "completed"
     context.user_data.pop("awaiting_config", None)
+
     await update.message.reply_text("✅ کانفیگ برای مشتری ارسال شد.")
 
-def main():
-    if not TOKEN:
-        raise RuntimeError("BOT_TOKEN تنظیم نشده است.")
 
+def main():
     app = Application.builder().token(TOKEN).build()
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("support", support))
     app.add_handler(CallbackQueryHandler(choose_plan, pattern=r"^plan:"))
     app.add_handler(CallbackQueryHandler(admin_buttons, pattern=r"^(approve|reject):"))
     app.add_handler(MessageHandler(filters.PHOTO, receive_receipt))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, admin_config))
-    app.run_polling()
+
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path="telegram",
+        webhook_url=f"{BASE_URL}/telegram",
+        allowed_updates=Update.ALL_TYPES,
+    )
+
 
 if __name__ == "__main__":
     main()
